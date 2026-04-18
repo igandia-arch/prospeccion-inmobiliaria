@@ -40,37 +40,39 @@ def ejecutar_busqueda_web(calle, f)
     h.request(Net::HTTP::Get.new(url_mapa, {'User-Agent' => 'IvanAppWeb'}))
   end
   datos_mapa = JSON.parse(res_mapa.body)
-  
-  if datos_mapa.empty?
-    puts "CHIVATO -> El mapa no ha encontrado la calle."
-    return [] 
-  end
+  return [] if datos_mapa.empty?
 
   bbox = datos_mapa.first["boundingbox"]
   c_lat = (bbox[0].to_f + bbox[1].to_f) / 2.0
   c_lon = (bbox[2].to_f + bbox[3].to_f) / 2.0
-  bbox_c = "#{c_lat-0.002},#{c_lon-0.002},#{c_lat+0.002},#{c_lon+0.002}"
-
-  url_wfs = URI("http://ovc.catastro.meh.es/INSPIRE/wfsBU.aspx?service=WFS&version=2.0.0&request=GetFeature&typenames=bu:BuildingPart&srsname=EPSG:4326&BBOX=#{bbox_c}")
-  res_wfs = Net::HTTP.get_response(url_wfs)
-  xml_wfs = res_wfs.body.encode("UTF-8", invalid: :replace, undef: :replace, replace: "?")
   
-  # --- INICIO DE LOS CHIVATOS ---
-  puts "\n========== REPORTE DEL CATASTRO =========="
-  puts "URL de Búsqueda: #{url_wfs}"
-  puts "Código de Respuesta del Gobierno: #{res_wfs.code}"
-  puts "Primeros 300 caracteres de lo que nos envían:"
-  puts xml_wfs[0..300]
-  puts "==========================================\n"
-  # --- FIN DE LOS CHIVATOS ---
+  # CORRECCIÓN 1: Recortamos los decimales con las "tijeras" matemáticas para no colapsar al Catastro
+  lat_min = (c_lat - 0.002).round(6)
+  lon_min = (c_lon - 0.002).round(6)
+  lat_max = (c_lat + 0.002).round(6)
+  lon_max = (c_lon + 0.002).round(6)
+  bbox_c = "#{lat_min},#{lon_min},#{lat_max},#{lon_max}"
 
+  # CORRECCIÓN 2: Forzamos la conexión por HTTPS seguro
+  url_wfs = URI("https://ovc.catastro.meh.es/INSPIRE/wfsBU.aspx?service=WFS&version=2.0.0&request=GetFeature&typenames=bu:BuildingPart&srsname=EPSG:4326&BBOX=#{bbox_c}")
+  
+  # CORRECCIÓN 3: Le ponemos el disfraz de navegador Windows
+  req_wfs = Net::HTTP::Get.new(url_wfs)
+  req_wfs['User-Agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
+  res_wfs = Net::HTTP.start(url_wfs.hostname, url_wfs.port, use_ssl: true, verify_mode: OpenSSL::SSL::VERIFY_NONE) { |h| h.request(req_wfs) }
+  
+  xml_wfs = res_wfs.body.encode("UTF-8", invalid: :replace, undef: :replace, replace: "?")
   refs = xml_wfs.scan(/localId[^>]*>([A-Z0-9]{14})/).flatten.uniq
-  puts "CHIVATO -> Edificios extraídos de ese texto: #{refs.count}\n"
 
   refs.each do |rc14|
     sleep(0.1)
-    url_det = URI("http://ovc.catastro.meh.es/ovcservweb/OVCSWLocalizacionRC/OVCCallejero.asmx/Consulta_DNPRC?Provincia=MADRID&Municipio=MADRID&RC=#{rc14}")
-    res_det = Net::HTTP.get_response(url_det)
+    
+    # Hacemos lo mismo con los detalles (HTTPS y Disfraz)
+    url_det = URI("https://ovc.catastro.meh.es/ovcservweb/OVCSWLocalizacionRC/OVCCallejero.asmx/Consulta_DNPRC?Provincia=MADRID&Municipio=MADRID&RC=#{rc14}")
+    req_det = Net::HTTP::Get.new(url_det)
+    req_det['User-Agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
+    res_det = Net::HTTP.start(url_det.hostname, url_det.port, use_ssl: true, verify_mode: OpenSSL::SSL::VERIFY_NONE) { |h| h.request(req_det) }
+    
     next unless res_det.is_a?(Net::HTTPSuccess)
     
     xml = res_det.body.encode("UTF-8", invalid: :replace, undef: :replace, replace: "?")
