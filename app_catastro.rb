@@ -64,7 +64,8 @@ def ejecutar_busqueda_web(calle, f)
   refs = xml_wfs.scan(/localId[^>]*>([A-Z0-9]{14})/).flatten.uniq
 
   refs.each do |rc14|
-    sleep(0.1) # Freno de mano
+    # ¡MODO TURBO! Reducido de 0.1 a 0.01 segundos (10 veces más rápido)
+    sleep(0.01) 
     
     url_det = URI("https://ovc.catastro.meh.es/ovcservweb/OVCSWLocalizacionRC/OVCCallejero.asmx/Consulta_DNPRC?Provincia=MADRID&Municipio=MADRID&RC=#{rc14}")
     req_det = Net::HTTP::Get.new(url_det)
@@ -87,23 +88,20 @@ def ejecutar_busqueda_web(calle, f)
       dir = p_xml.match(/<ldt>([^<]+)<\/ldt>/i) ? $1.strip : "Sin dirección"
 
       # 1. FILTRO DE METROS (Aplica siempre)
-      # En Modo VUT nos aseguramos de que el mínimo sea al menos 50m2 para cumplir la ley
       min_requerido = (f[:modo_vut] == "on" && f[:min_m2] < 50) ? 50 : f[:min_m2]
       next if sfc < min_requerido || sfc > f[:max_m2]
 
       # 2. FILTROS DE USO SEGÚN EL MODO
       if f[:modo_vut] == "on"
-        # MODO VUT: Exige planta baja y descarta viviendas y basura
         next unless ["00", "BA", "BJ", "PB"].include?(pt.upcase) 
         next if ["V", "E"].include?(uso.upcase) 
         next if pt.upcase == "OD" 
       else
-        # MODO NORMAL: Aplica los desplegables del formulario
         next if f[:uso] != "*" && uso != f[:uso]
         next if f[:clase] != "*" && cn != f[:clase]
       end
 
-      # 3. FILTROS DE AÑO Y MINÚSCULAS (Aplican siempre)
+      # 3. FILTROS DE AÑO Y MINÚSCULAS
       next if ant < f[:min_year] || ant > f[:max_year]
       if f[:minuscula] == "on"
         next unless (pt.match?(/[a-z]/) || pu.match?(/[a-z]/))
@@ -213,12 +211,12 @@ __END__
     </label>
     <br><br>
     
-    <button type="submit" id="btn-buscar">🚀 Iniciar Prospección</button>
+    <button type="submit" id="btn-buscar">🚀 Iniciar Prospección (Turbo)</button>
     
     <div id="cargando" style="display:none; text-align:center; margin-top:20px;">
       <div class="spinner"></div>
-      <h3 style="color:#007BFF; display:inline-block;">Estoy pensando, no me estoy rascando las narices. Espera, plis<span class="loading-text"></span></h3>
-      <p style="color:#666;"><small>(Buscando en un radio de 200m. Esto puede tardar varios minutos...)</small></p>
+      <h3 style="color:#007BFF; display:inline-block;">Procesando a máxima velocidad<span class="loading-text"></span></h3>
+      <p style="color:#666;"><small>(Buscando en un radio de 200m sin pausas. Cruza los dedos...)</small></p>
     </div>
   </form>
 </body>
@@ -303,9 +301,9 @@ __END__
     <div class="aviso-legal">
       <strong>⚠️ Avisos Legales Plan RESIDE a comprobar manualmente:</strong>
       <ul style="margin: 5px 0 0 0; padding-left: 20px;">
-        <li>Asegúrate de que esta calle no se encuentra en el <strong>Anillo 1 (Centro Histórico)</strong>[cite: 308].</li>
-        <li>Comprueba en el plano municipal que no sea un <strong>Eje Terciario protegido</strong> (Norma Zonal 10)[cite: 340].</li>
-        <li>Recuerda que el local necesitará una altura libre interior de <strong>2,50 metros</strong>[cite: 360].</li>
+        <li>Asegúrate de que esta calle no se encuentra en el <strong>Anillo 1 (Centro Histórico)</strong>.</li>
+        <li>Comprueba en el plano municipal que no sea un <strong>Eje Terciario protegido</strong> (Norma Zonal 10).</li>
+        <li>Recuerda que el local necesitará una altura libre interior de <strong>2,50 metros</strong>.</li>
       </ul>
     </div>
   <% end %>
