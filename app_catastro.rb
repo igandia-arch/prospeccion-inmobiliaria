@@ -46,17 +46,14 @@ def ejecutar_busqueda_web(calle, f)
   c_lat = (bbox[0].to_f + bbox[1].to_f) / 2.0
   c_lon = (bbox[2].to_f + bbox[3].to_f) / 2.0
   
-  # CORRECCIÓN 1: Recortamos los decimales con las "tijeras" matemáticas para no colapsar al Catastro
   lat_min = (c_lat - 0.002).round(6)
   lon_min = (c_lon - 0.002).round(6)
   lat_max = (c_lat + 0.002).round(6)
   lon_max = (c_lon + 0.002).round(6)
   bbox_c = "#{lat_min},#{lon_min},#{lat_max},#{lon_max}"
 
-  # CORRECCIÓN 2: Forzamos la conexión por HTTPS seguro
   url_wfs = URI("https://ovc.catastro.meh.es/INSPIRE/wfsBU.aspx?service=WFS&version=2.0.0&request=GetFeature&typenames=bu:BuildingPart&srsname=EPSG:4326&BBOX=#{bbox_c}")
   
-  # CORRECCIÓN 3: Le ponemos el disfraz de navegador Windows
   req_wfs = Net::HTTP::Get.new(url_wfs)
   req_wfs['User-Agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
   res_wfs = Net::HTTP.start(url_wfs.hostname, url_wfs.port, use_ssl: true, verify_mode: OpenSSL::SSL::VERIFY_NONE) { |h| h.request(req_wfs) }
@@ -67,7 +64,6 @@ def ejecutar_busqueda_web(calle, f)
   refs.each do |rc14|
     sleep(0.1)
     
-    # Hacemos lo mismo con los detalles (HTTPS y Disfraz)
     url_det = URI("https://ovc.catastro.meh.es/ovcservweb/OVCSWLocalizacionRC/OVCCallejero.asmx/Consulta_DNPRC?Provincia=MADRID&Municipio=MADRID&RC=#{rc14}")
     req_det = Net::HTTP::Get.new(url_det)
     req_det['User-Agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
@@ -85,7 +81,9 @@ def ejecutar_busqueda_web(calle, f)
       ant = p_xml.match(/<ant>(\d+)<\/ant>/i) ? $1.to_i : 0
       pt = p_xml.match(/<pt>([^<]*)<\/pt>/i) ? $1.strip : ""
       pu = p_xml.match(/<pu>([^<]*)<\/pu>/i) ? $1.strip : ""
-      dir = p_xml.match(/<lddt>([^<]+)<\/lddt>/i) ? $1.strip : "Sin dirección"
+      
+      # CORRECCIÓN DE LA CALLE (Buscamos la etiqueta <ldt>)
+      dir = p_xml.match(/<ldt>([^<]+)<\/ldt>/i) ? $1.strip : "Sin dirección"
 
       next if sfc < f[:min_m2] || sfc > f[:max_m2]
       next if f[:uso] != "*" && uso != f[:uso]
@@ -110,12 +108,18 @@ __END__
   <title>Prospección Madrid</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/water.css@2/out/water.css">
+  <script>
+    function mostrarCarga() {
+      document.getElementById('cargando').style.display = 'block';
+      document.getElementById('btn-buscar').style.display = 'none';
+    }
+  </script>
 </head>
 <body>
   <h1>🏙️ Prospección Inmobiliaria</h1>
-  <form action="/buscar" method="POST">
+  <form action="/buscar" method="POST" onsubmit="mostrarCarga()">
     <label>📍 Calle o Zona (Madrid):</label>
-    <input type="text" name="calle" placeholder="Ej: Serrano 100" required>
+    <input type="text" name="calle" placeholder="Ej: Alcalá 100" required>
     
     <div style="display:flex; gap:10px;">
       <div><label>Mín m2:</label><input type="number" name="min_m2" value="0"></div>
@@ -147,8 +151,14 @@ __END__
     <label>
       <input type="checkbox" name="minuscula"> Solo letras minúsculas (bj, iz...)
     </label>
-    <br>
-    <button type="submit">🚀 Iniciar Prospección</button>
+    <br><br>
+    
+    <button type="submit" id="btn-buscar">🚀 Iniciar Prospección</button>
+    
+    <div id="cargando" style="display:none; text-align:center; margin-top:20px;">
+      <h3 style="color:#007BFF;">⏳ Estoy pensando, no me estoy rascando las narices. Espera, plis...</h3>
+      <p><small>(Esto puede tardar hasta un minuto dependiendo del tamaño de la calle)</small></p>
+    </div>
   </form>
 </body>
 </html>
@@ -160,16 +170,40 @@ __END__
   <title>Resultados</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/water.css@2/out/water.css">
+  <script>
+    function descargarExcel() {
+      var csv = [];
+      var rows = document.querySelectorAll("table tr");
+      for (var i = 0; i < rows.length; i++) {
+        var row = [], cols = rows[i].querySelectorAll("td, th");
+        for (var j = 0; j < cols.length; j++) {
+            row.push('"' + cols[j].innerText.replace(/"/g, '""') + '"');
+        }
+        csv.push(row.join(";"));
+      }
+      var csvFile = new Blob(["\uFEFF" + csv.join("\n")], {type: "text/csv;charset=utf-8;"});
+      var downloadLink = document.createElement("a");
+      downloadLink.download = "prospeccion_<%= @nombre_calle.gsub(' ', '_') %>.csv";
+      downloadLink.href = window.URL.createObjectURL(csvFile);
+      downloadLink.style.display = "none";
+      document.body.appendChild(downloadLink);
+      downloadLink.click();
+    }
+  </script>
 </head>
 <body>
-  <a href="/">⬅️ Nueva Búsqueda</a>
+  <div style="display:flex; justify-content:space-between; align-items:center;">
+    <a href="/">⬅️ Nueva Búsqueda</a>
+    <button onclick="descargarExcel()" style="background-color:#28a745; color:white; border-radius:5px;">📥 Descargar Excel</button>
+  </div>
+  
   <h1>📍 Resultados: <%= @nombre_calle %></h1>
   <p>Se han encontrado <strong><%= @resultados.count %></strong> propiedades.</p>
 
   <table border="1" style="width:100%; text-align:left;">
     <thead>
       <tr>
-        <th>Dirección</th>
+        <th>Dirección Exacta</th>
         <th>m2</th>
         <th>Uso</th>
         <th>Año</th>
