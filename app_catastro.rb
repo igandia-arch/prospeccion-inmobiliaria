@@ -46,10 +46,11 @@ def ejecutar_busqueda_web(calle, f)
   c_lat = (bbox[0].to_f + bbox[1].to_f) / 2.0
   c_lon = (bbox[2].to_f + bbox[3].to_f) / 2.0
   
-  lat_min = (c_lat - 0.002).round(6)
-  lon_min = (c_lon - 0.002).round(6)
-  lat_max = (c_lat + 0.002).round(6)
-  lon_max = (c_lon + 0.002).round(6)
+  # REDUCCIÓN DEL ÁREA A ~200 METROS
+  lat_min = (c_lat - 0.001).round(6)
+  lon_min = (c_lon - 0.001).round(6)
+  lat_max = (c_lat + 0.001).round(6)
+  lon_max = (c_lon + 0.001).round(6)
   bbox_c = "#{lat_min},#{lon_min},#{lat_max},#{lon_max}"
 
   url_wfs = URI("https://ovc.catastro.meh.es/INSPIRE/wfsBU.aspx?service=WFS&version=2.0.0&request=GetFeature&typenames=bu:BuildingPart&srsname=EPSG:4326&BBOX=#{bbox_c}")
@@ -62,7 +63,7 @@ def ejecutar_busqueda_web(calle, f)
   refs = xml_wfs.scan(/localId[^>]*>([A-Z0-9]{14})/).flatten.uniq
 
   refs.each do |rc14|
-    sleep(0.1)
+    sleep(0.1) # El freno de mano del Catastro para que no nos bloqueen
     
     url_det = URI("https://ovc.catastro.meh.es/ovcservweb/OVCSWLocalizacionRC/OVCCallejero.asmx/Consulta_DNPRC?Provincia=MADRID&Municipio=MADRID&RC=#{rc14}")
     req_det = Net::HTTP::Get.new(url_det)
@@ -108,7 +109,6 @@ __END__
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/water.css@2/out/water.css">
   <style>
-    /* El diseño del reloj dando vueltas */
     .spinner {
       border: 5px solid rgba(0, 0, 0, 0.1);
       width: 40px;
@@ -122,8 +122,6 @@ __END__
       0% { transform: rotate(0deg); }
       100% { transform: rotate(360deg); }
     }
-    
-    /* La animación de los puntitos suspensivos */
     .loading-text:after {
       content: '.';
       animation: dots 1.5s steps(5, end) infinite;
@@ -185,7 +183,7 @@ __END__
     <div id="cargando" style="display:none; text-align:center; margin-top:20px;">
       <div class="spinner"></div>
       <h3 style="color:#007BFF; display:inline-block;">Estoy pensando, no me estoy rascando las narices. Espera, plis<span class="loading-text"></span></h3>
-      <p style="color:#666;"><small>(Buceando en el Catastro. Esto puede tardar hasta 1 minuto...)</small></p>
+      <p style="color:#666;"><small>(Buscando en un radio de 200m. Esto puede tardar varios minutos...)</small></p>
     </div>
   </form>
 </body>
@@ -198,6 +196,19 @@ __END__
   <title>Resultados</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/water.css@2/out/water.css">
+  <style>
+    .resumen-filtros {
+      background-color: #f8f9fa;
+      border-left: 4px solid #007BFF;
+      padding: 15px;
+      margin-bottom: 20px;
+      border-radius: 4px;
+    }
+    .resumen-filtros ul {
+      margin: 5px 0 0 0;
+      padding-left: 20px;
+    }
+  </style>
   <script>
     function descargarExcel() {
       var csv = [];
@@ -225,32 +236,50 @@ __END__
     <button onclick="descargarExcel()" style="background-color:#28a745; color:white; border-radius:5px;">📥 Descargar Excel</button>
   </div>
   
-  <h1>📍 Resultados: <%= @nombre_calle %></h1>
-  <p>Se han encontrado <strong><%= @resultados.count %></strong> propiedades.</p>
-
-  <table border="1" style="width:100%; text-align:left;">
-    <thead>
-      <tr>
-        <th>Dirección Exacta</th>
-        <th>m2</th>
-        <th>Uso</th>
-        <th>Año</th>
-        <th>Planta/Pta</th>
-        <th>Ref. Catastral</th>
-      </tr>
-    </thead>
-    <tbody>
-      <% @resultados.each do |r| %>
-        <tr>
-          <td><%= r[:dir] %></td>
-          <td><%= r[:sfc] %></td>
-          <td><%= r[:uso] %></td>
-          <td><%= r[:ant] %></td>
-          <td><%= r[:pt] %> <%= r[:pu] %></td>
-          <td><code><%= r[:rc] %></code></td>
-        </tr>
+  <h1>📍 Resultados para: <%= @nombre_calle %></h1>
+  
+  <div class="resumen-filtros">
+    <strong>Se han encontrado <%= @resultados.count %> inmuebles en un radio de 200m con estos criterios:</strong>
+    <ul>
+      <li><strong>Superficie:</strong> Entre <%= @filtros[:min_m2] %> m² y <%= @filtros[:max_m2] == 999999 ? 'Sin límite' : @filtros[:max_m2].to_s + ' m²' %></li>
+      <li><strong>Uso Principal:</strong> <%= @filtros[:uso] == '*' ? 'Cualquiera' : @filtros[:uso] %></li>
+      <li><strong>Clase de Inmueble:</strong> <%= @filtros[:clase] == '*' ? 'Cualquiera' : @filtros[:clase] %></li>
+      <li><strong>Antigüedad:</strong> Desde <%= @filtros[:min_year] %> hasta <%= @filtros[:max_year] %></li>
+      <% if @filtros[:minuscula] == "on" %>
+        <li><strong>Filtro Extra:</strong> Solo plantas/puertas con minúsculas (bj, iz...)</li>
       <% end %>
-    </tbody>
-  </table>
+    </ul>
+  </div>
+
+  <% if @resultados.any? %>
+    <table border="1" style="width:100%; text-align:left;">
+      <thead>
+        <tr>
+          <th>Dirección Exacta</th>
+          <th>m2</th>
+          <th>Uso</th>
+          <th>Año</th>
+          <th>Planta/Pta</th>
+          <th>Ref. Catastral</th>
+        </tr>
+      </thead>
+      <tbody>
+        <% @resultados.each do |r| %>
+          <tr>
+            <td><%= r[:dir] %></td>
+            <td><%= r[:sfc] %></td>
+            <td><%= r[:uso] %></td>
+            <td><%= r[:ant] %></td>
+            <td><%= r[:pt] %> <%= r[:pu] %></td>
+            <td><code><%= r[:rc] %></code></td>
+          </tr>
+        <% end %>
+      </tbody>
+    </table>
+  <% else %>
+    <p style="text-align:center; padding: 20px; color: #666;">
+      <em>No se ha encontrado ninguna propiedad que cumpla todos los filtros en esta zona. Prueba a ser menos estricto con los metros o los usos.</em>
+    </p>
+  <% end %>
 </body>
 </html>
