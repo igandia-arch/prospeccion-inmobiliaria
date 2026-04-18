@@ -47,7 +47,7 @@ def ejecutar_busqueda_web(calle, f)
   c_lat = (bbox[0].to_f + bbox[1].to_f) / 2.0
   c_lon = (bbox[2].to_f + bbox[3].to_f) / 2.0
   
-  # VOLVEMOS AL RADAR SEGURO DE 200 METROS
+  # REDUCCIÓN DEL ÁREA A ~200 METROS
   lat_min = (c_lat - 0.001).round(6)
   lon_min = (c_lon - 0.001).round(6)
   lat_max = (c_lat + 0.001).round(6)
@@ -64,8 +64,8 @@ def ejecutar_busqueda_web(calle, f)
   refs = xml_wfs.scan(/localId[^>]*>([A-Z0-9]{14})/).flatten.uniq
 
   refs.each do |rc14|
-    # VOLVEMOS AL FRENO DE MANO SEGURO
-    sleep(0.1) 
+    # ¡MODO TURBO! Reducido de 0.1 a 0.01 segundos (10 veces más rápido)
+    sleep(0.01) 
     
     url_det = URI("https://ovc.catastro.meh.es/ovcservweb/OVCSWLocalizacionRC/OVCCallejero.asmx/Consulta_DNPRC?Provincia=MADRID&Municipio=MADRID&RC=#{rc14}")
     req_det = Net::HTTP::Get.new(url_det)
@@ -211,12 +211,12 @@ __END__
     </label>
     <br><br>
     
-    <button type="submit" id="btn-buscar">🚀 Iniciar Prospección</button>
+    <button type="submit" id="btn-buscar">🚀 Iniciar Prospección (Turbo)</button>
     
     <div id="cargando" style="display:none; text-align:center; margin-top:20px;">
       <div class="spinner"></div>
-      <h3 style="color:#007BFF; display:inline-block;">Estoy pensando, no me estoy rascando las narices. Espera, plis<span class="loading-text"></span></h3>
-      <p style="color:#666;"><small>(Buscando en un radio de 200m. Esto puede tardar varios minutos...)</small></p>
+      <h3 style="color:#007BFF; display:inline-block;">Procesando a máxima velocidad<span class="loading-text"></span></h3>
+      <p style="color:#666;"><small>(Buscando en un radio de 200m sin pausas. Cruza los dedos...)</small></p>
     </div>
   </form>
 </body>
