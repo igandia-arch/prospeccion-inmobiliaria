@@ -82,7 +82,6 @@ def ejecutar_busqueda_web(calle, f)
       pt = p_xml.match(/<pt>([^<]*)<\/pt>/i) ? $1.strip : ""
       pu = p_xml.match(/<pu>([^<]*)<\/pu>/i) ? $1.strip : ""
       
-      # CORRECCIÓN DE LA CALLE (Buscamos la etiqueta <ldt>)
       dir = p_xml.match(/<ldt>([^<]+)<\/ldt>/i) ? $1.strip : "Sin dirección"
 
       next if sfc < f[:min_m2] || sfc > f[:max_m2]
@@ -108,6 +107,34 @@ __END__
   <title>Prospección Madrid</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/water.css@2/out/water.css">
+  <style>
+    /* El diseño del reloj dando vueltas */
+    .spinner {
+      border: 5px solid rgba(0, 0, 0, 0.1);
+      width: 40px;
+      height: 40px;
+      border-radius: 50%;
+      border-left-color: #007BFF;
+      animation: spin 1s linear infinite;
+      margin: 0 auto 15px auto;
+    }
+    @keyframes spin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+    
+    /* La animación de los puntitos suspensivos */
+    .loading-text:after {
+      content: '.';
+      animation: dots 1.5s steps(5, end) infinite;
+    }
+    @keyframes dots {
+      0%, 20% { color: rgba(0,0,0,0); text-shadow: .25em 0 0 rgba(0,0,0,0), .5em 0 0 rgba(0,0,0,0); }
+      40% { color: #007BFF; text-shadow: .25em 0 0 rgba(0,0,0,0), .5em 0 0 rgba(0,0,0,0); }
+      60% { text-shadow: .25em 0 0 #007BFF, .5em 0 0 rgba(0,0,0,0); }
+      80%, 100% { text-shadow: .25em 0 0 #007BFF, .5em 0 0 #007BFF; }
+    }
+  </style>
   <script>
     function mostrarCarga() {
       document.getElementById('cargando').style.display = 'block';
@@ -156,8 +183,9 @@ __END__
     <button type="submit" id="btn-buscar">🚀 Iniciar Prospección</button>
     
     <div id="cargando" style="display:none; text-align:center; margin-top:20px;">
-      <h3 style="color:#007BFF;">⏳ Estoy pensando, no me estoy rascando las narices. Espera, plis...</h3>
-      <p><small>(Esto puede tardar hasta un minuto dependiendo del tamaño de la calle)</small></p>
+      <div class="spinner"></div>
+      <h3 style="color:#007BFF; display:inline-block;">Estoy pensando, no me estoy rascando las narices. Espera, plis<span class="loading-text"></span></h3>
+      <p style="color:#666;"><small>(Buceando en el Catastro. Esto puede tardar hasta 1 minuto...)</small></p>
     </div>
   </form>
 </body>
