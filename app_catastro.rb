@@ -44,14 +44,14 @@ def ejecutar_busqueda_web(calle, f)
   return [] if datos_mapa.empty?
 
   bbox = datos_mapa.first["boundingbox"]
-  c_lat = (bbox[0].to_f + bbox[1].to_f) / 2.0
-  c_lon = (bbox[2].to_f + bbox[3].to_f) / 2.0
   
-  # REDUCCIÓN DEL ÁREA A ~200 METROS
-  lat_min = (c_lat - 0.001).round(6)
-  lon_min = (c_lon - 0.001).round(6)
-  lat_max = (c_lat + 0.001).round(6)
-  lon_max = (c_lon + 0.001).round(6)
+  # BÚSQUEDA SIN LÍMITES: Usamos la extensión total de la calle/zona según el mapa
+  # Recortamos a 6 decimales para que el ordenador del Catastro no se bloquee
+  lat_min = bbox[0].to_f.round(6)
+  lat_max = bbox[1].to_f.round(6)
+  lon_min = bbox[2].to_f.round(6)
+  lon_max = bbox[3].to_f.round(6)
+  
   bbox_c = "#{lat_min},#{lon_min},#{lat_max},#{lon_max}"
 
   url_wfs = URI("https://ovc.catastro.meh.es/INSPIRE/wfsBU.aspx?service=WFS&version=2.0.0&request=GetFeature&typenames=bu:BuildingPart&srsname=EPSG:4326&BBOX=#{bbox_c}")
@@ -64,8 +64,7 @@ def ejecutar_busqueda_web(calle, f)
   refs = xml_wfs.scan(/localId[^>]*>([A-Z0-9]{14})/).flatten.uniq
 
   refs.each do |rc14|
-    # ¡MODO TURBO! Reducido de 0.1 a 0.01 segundos (10 veces más rápido)
-    sleep(0.01) 
+    sleep(0.01) # MODO TURBO activado
     
     url_det = URI("https://ovc.catastro.meh.es/ovcservweb/OVCSWLocalizacionRC/OVCCallejero.asmx/Consulta_DNPRC?Provincia=MADRID&Municipio=MADRID&RC=#{rc14}")
     req_det = Net::HTTP::Get.new(url_det)
@@ -216,7 +215,7 @@ __END__
     <div id="cargando" style="display:none; text-align:center; margin-top:20px;">
       <div class="spinner"></div>
       <h3 style="color:#007BFF; display:inline-block;">Procesando a máxima velocidad<span class="loading-text"></span></h3>
-      <p style="color:#666;"><small>(Buscando en un radio de 200m sin pausas. Cruza los dedos...)</small></p>
+      <p style="color:#666;"><small>(Buscando en toda la extensión de la calle. Esto puede tardar varios minutos...)</small></p>
     </div>
   </form>
 </body>
@@ -280,7 +279,7 @@ __END__
   <h1>📍 Resultados para: <%= @nombre_calle %></h1>
   
   <div class="resumen-filtros">
-    <strong>Se han encontrado <%= @resultados.count %> inmuebles en un radio de 200m con estos criterios:</strong>
+    <strong>Se han encontrado <%= @resultados.count %> inmuebles en esta zona con estos criterios:</strong>
     <ul>
       <% if @filtros[:modo_vut] == "on" %>
         <li style="color:#007BFF; font-weight:bold;">⚡ MODO CAZADOR VUT ACTIVADO:</li>
