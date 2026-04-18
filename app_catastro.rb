@@ -24,7 +24,8 @@ post '/buscar' do
     clase: params[:clase],
     min_year: params[:min_year].to_i,
     max_year: params[:max_year].empty? ? Time.now.year : params[:max_year].to_i,
-    minuscula: params[:minuscula] # "on" o nil
+    minuscula: params[:minuscula], # "on" o nil
+    modo_vut: params[:modo_vut]    # "on" o nil
   }
 
   @resultados = ejecutar_busqueda_web(@nombre_calle, @filtros)
@@ -63,7 +64,7 @@ def ejecutar_busqueda_web(calle, f)
   refs = xml_wfs.scan(/localId[^>]*>([A-Z0-9]{14})/).flatten.uniq
 
   refs.each do |rc14|
-    sleep(0.1) # El freno de mano del Catastro para que no nos bloqueen
+    sleep(0.1) # Freno de mano
     
     url_det = URI("https://ovc.catastro.meh.es/ovcservweb/OVCSWLocalizacionRC/OVCCallejero.asmx/Consulta_DNPRC?Provincia=MADRID&Municipio=MADRID&RC=#{rc14}")
     req_det = Net::HTTP::Get.new(url_det)
@@ -85,9 +86,24 @@ def ejecutar_busqueda_web(calle, f)
       
       dir = p_xml.match(/<ldt>([^<]+)<\/ldt>/i) ? $1.strip : "Sin dirección"
 
-      next if sfc < f[:min_m2] || sfc > f[:max_m2]
-      next if f[:uso] != "*" && uso != f[:uso]
-      next if f[:clase] != "*" && cn != f[:clase]
+      # 1. FILTRO DE METROS (Aplica siempre)
+      # En Modo VUT nos aseguramos de que el mínimo sea al menos 50m2 para cumplir la ley
+      min_requerido = (f[:modo_vut] == "on" && f[:min_m2] < 50) ? 50 : f[:min_m2]
+      next if sfc < min_requerido || sfc > f[:max_m2]
+
+      # 2. FILTROS DE USO SEGÚN EL MODO
+      if f[:modo_vut] == "on"
+        # MODO VUT: Exige planta baja y descarta viviendas y basura
+        next unless ["00", "BA", "BJ", "PB"].include?(pt.upcase) 
+        next if ["V", "E"].include?(uso.upcase) 
+        next if pt.upcase == "OD" 
+      else
+        # MODO NORMAL: Aplica los desplegables del formulario
+        next if f[:uso] != "*" && uso != f[:uso]
+        next if f[:clase] != "*" && cn != f[:clase]
+      end
+
+      # 3. FILTROS DE AÑO Y MINÚSCULAS (Aplican siempre)
       next if ant < f[:min_year] || ant > f[:max_year]
       if f[:minuscula] == "on"
         next unless (pt.match?(/[a-z]/) || pu.match?(/[a-z]/))
@@ -132,6 +148,13 @@ __END__
       60% { text-shadow: .25em 0 0 #007BFF, .5em 0 0 rgba(0,0,0,0); }
       80%, 100% { text-shadow: .25em 0 0 #007BFF, .5em 0 0 #007BFF; }
     }
+    .caja-vut {
+      background-color: #e8f4f8;
+      border-left: 5px solid #007BFF;
+      padding: 15px;
+      margin-bottom: 20px;
+      border-radius: 5px;
+    }
   </style>
   <script>
     function mostrarCarga() {
@@ -142,14 +165,26 @@ __END__
 </head>
 <body>
   <h1>🏙️ Prospección Inmobiliaria</h1>
+  
   <form action="/buscar" method="POST" onsubmit="mostrarCarga()">
     <label>📍 Calle o Zona (Madrid):</label>
-    <input type="text" name="calle" placeholder="Ej: Alcalá 100" required>
+    <input type="text" name="calle" placeholder="Ej: General Ricardos 50" required>
     
+    <div class="caja-vut">
+      <h3 style="margin-top:0; color: #007BFF;">⚡ Modo Cazador de VUTs</h3>
+      <p style="font-size: 0.9em; color: #333; margin-bottom: 10px;">Activa esta opción para buscar solo plantas bajas (no residenciales). <strong>Los filtros de metros cuadrados y años de abajo seguirán funcionando.</strong></p>
+      <label style="font-weight: bold; cursor: pointer;">
+        <input type="checkbox" name="modo_vut" checked> Activar radar estricto VUT (Mínimo de seguridad: 50m² construidos)
+      </label>
+    </div>
+
     <div style="display:flex; gap:10px;">
-      <div><label>Mín m2:</label><input type="number" name="min_m2" value="0"></div>
+      <div><label>Mín m2:</label><input type="number" name="min_m2" value="60"></div>
       <div><label>Máx m2:</label><input type="number" name="max_m2"></div>
     </div>
+
+    <hr style="opacity: 0.2; margin: 20px 0;">
+    <p><small><em>(Uso y Clase: Solo aplican si desactivas el Modo VUT)</em></small></p>
 
     <label>🏢 Uso Principal:</label>
     <select name="uso">
@@ -208,6 +243,14 @@ __END__
       margin: 5px 0 0 0;
       padding-left: 20px;
     }
+    .aviso-legal {
+      background-color: #fff3cd;
+      border-left: 4px solid #ffc107;
+      padding: 15px;
+      margin-bottom: 20px;
+      border-radius: 4px;
+      color: #856404;
+    }
   </style>
   <script>
     function descargarExcel() {
@@ -241,22 +284,38 @@ __END__
   <div class="resumen-filtros">
     <strong>Se han encontrado <%= @resultados.count %> inmuebles en un radio de 200m con estos criterios:</strong>
     <ul>
-      <li><strong>Superficie:</strong> Entre <%= @filtros[:min_m2] %> m² y <%= @filtros[:max_m2] == 999999 ? 'Sin límite' : @filtros[:max_m2].to_s + ' m²' %></li>
-      <li><strong>Uso Principal:</strong> <%= @filtros[:uso] == '*' ? 'Cualquiera' : @filtros[:uso] %></li>
-      <li><strong>Clase de Inmueble:</strong> <%= @filtros[:clase] == '*' ? 'Cualquiera' : @filtros[:clase] %></li>
-      <li><strong>Antigüedad:</strong> Desde <%= @filtros[:min_year] %> hasta <%= @filtros[:max_year] %></li>
-      <% if @filtros[:minuscula] == "on" %>
-        <li><strong>Filtro Extra:</strong> Solo plantas/puertas con minúsculas (bj, iz...)</li>
+      <% if @filtros[:modo_vut] == "on" %>
+        <li style="color:#007BFF; font-weight:bold;">⚡ MODO CAZADOR VUT ACTIVADO:</li>
+        <li><strong>Superficie Exigida:</strong> Entre <%= [@filtros[:min_m2], 50].max %> m² y <%= @filtros[:max_m2] == 999999 ? 'Sin límite' : @filtros[:max_m2].to_s + ' m²' %>.</li>
+        <li>Solo plantas bajas (garantiza viabilidad de acceso independiente).</li>
+        <li>Solo locales no residenciales (comercial, industrial, oficinas).</li>
+        <li><strong>Antigüedad:</strong> Desde <%= @filtros[:min_year] %> hasta <%= @filtros[:max_year] %>.</li>
+      <% else %>
+        <li><strong>Superficie:</strong> Entre <%= @filtros[:min_m2] %> m² y <%= @filtros[:max_m2] == 999999 ? 'Sin límite' : @filtros[:max_m2].to_s + ' m²' %></li>
+        <li><strong>Uso Principal:</strong> <%= @filtros[:uso] == '*' ? 'Cualquiera' : @filtros[:uso] %></li>
+        <li><strong>Clase de Inmueble:</strong> <%= @filtros[:clase] == '*' ? 'Cualquiera' : @filtros[:clase] %></li>
+        <li><strong>Antigüedad:</strong> Desde <%= @filtros[:min_year] %> hasta <%= @filtros[:max_year] %></li>
       <% end %>
     </ul>
   </div>
+
+  <% if @filtros[:modo_vut] == "on" %>
+    <div class="aviso-legal">
+      <strong>⚠️ Avisos Legales Plan RESIDE a comprobar manualmente:</strong>
+      <ul style="margin: 5px 0 0 0; padding-left: 20px;">
+        <li>Asegúrate de que esta calle no se encuentra en el <strong>Anillo 1 (Centro Histórico)</strong>[cite: 308].</li>
+        <li>Comprueba en el plano municipal que no sea un <strong>Eje Terciario protegido</strong> (Norma Zonal 10)[cite: 340].</li>
+        <li>Recuerda que el local necesitará una altura libre interior de <strong>2,50 metros</strong>[cite: 360].</li>
+      </ul>
+    </div>
+  <% end %>
 
   <% if @resultados.any? %>
     <table border="1" style="width:100%; text-align:left;">
       <thead>
         <tr>
           <th>Dirección Exacta</th>
-          <th>m2</th>
+          <th>m2 (Catastro)</th>
           <th>Uso</th>
           <th>Año</th>
           <th>Planta/Pta</th>
@@ -270,7 +329,7 @@ __END__
             <td><%= r[:sfc] %></td>
             <td><%= r[:uso] %></td>
             <td><%= r[:ant] %></td>
-            <td><%= r[:pt] %> <%= r[:pu] %></td>
+            <td><strong><%= r[:pt] %></strong> <%= r[:pu] %></td>
             <td><code><%= r[:rc] %></code></td>
           </tr>
         <% end %>
@@ -278,7 +337,7 @@ __END__
     </table>
   <% else %>
     <p style="text-align:center; padding: 20px; color: #666;">
-      <em>No se ha encontrado ninguna propiedad que cumpla todos los filtros en esta zona. Prueba a ser menos estricto con los metros o los usos.</em>
+      <em>No se ha encontrado ninguna propiedad que cumpla todos los filtros en esta zona. Prueba a buscar en otra calle menos residencial o más ancha.</em>
     </p>
   <% end %>
 </body>
