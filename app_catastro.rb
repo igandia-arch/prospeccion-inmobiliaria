@@ -36,32 +36,33 @@ end
 def ejecutar_busqueda_web(calle, f)
   candidatos = []
   
-  # 1. BUSCAMOS LAS COORDENADAS EN EL MAPA
+  # 1. CAMBIO DE MOTOR GPS: Usamos ArcGIS (Profesional) en lugar de OpenStreetMap
   begin
-    url_mapa = URI("https://nominatim.openstreetmap.org/search?q=#{URI.encode_www_form_component(calle + ', Madrid, España')}&format=json")
+    url_mapa = URI("https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer/findAddressCandidates?f=json&singleLine=#{URI.encode_www_form_component(calle + ', Madrid, España')}")
     res_mapa = Net::HTTP.start(url_mapa.hostname, url_mapa.port, use_ssl: true, verify_mode: OpenSSL::SSL::VERIFY_NONE) do |h| 
-      h.request(Net::HTTP::Get.new(url_mapa, {'User-Agent' => 'IvanAppProspeccion/1.0'}))
+      h.request(Net::HTTP::Get.new(url_mapa))
     end
     datos_mapa = JSON.parse(res_mapa.body)
   rescue => e
-    return [[], "ERROR DEL MAPA: #{e.message}"]
+    return [[], "ERROR DEL SATÉLITE ARCGIS: #{e.message}"]
   end
   
-  if datos_mapa.nil? || datos_mapa.empty?
-    return [[], "ERROR DEL MAPA: No ha encontrado esa calle. Intenta añadir el barrio o un número."]
+  if datos_mapa["candidates"].nil? || datos_mapa["candidates"].empty?
+    return [[], "ERROR DEL MAPA: El satélite no ha encontrado esa calle. Intenta escribirla de otra forma (Ej: 'General Ricardos, Madrid')."]
   end
 
-  bbox = datos_mapa.first["boundingbox"]
-  c_lat = (bbox[0].to_f + bbox[1].to_f) / 2.0
-  c_lon = (bbox[2].to_f + bbox[3].to_f) / 2.0
+  # ArcGIS nos devuelve directamente el centro exacto de la calle
+  c_lat = datos_mapa["candidates"].first["location"]["y"].to_f
+  c_lon = datos_mapa["candidates"].first["location"]["x"].to_f
   
+  # Calculamos el radar de 200 metros a la redonda
   lat_min = (c_lat - 0.001).round(6)
   lon_min = (c_lon - 0.001).round(6)
   lat_max = (c_lat + 0.001).round(6)
   lon_max = (c_lon + 0.001).round(6)
   bbox_c = "#{lat_min},#{lon_min},#{lat_max},#{lon_max}"
 
-  # 2. ENTRANDO POR LA PUERTA TRASERA DEL CATASTRO (www1)
+  # 2. ENTRANDO AL CATASTRO POR LA PUERTA TRASERA (www1)
   url_wfs = URI("https://www1.sedecatastro.gob.es/INSPIRE/wfsBU.aspx?service=WFS&version=2.0.0&request=GetFeature&typenames=bu:BuildingPart&srsname=EPSG:4326&BBOX=#{bbox_c}")
   
   begin
@@ -75,16 +76,14 @@ def ejecutar_busqueda_web(calle, f)
 
   refs = xml_wfs.scan(/localId[^>]*>([A-Z0-9]{14})/).flatten.uniq
 
-  # CHIVATO: Si el Catastro nos devuelve 0 edificios, mostramos por qué en pantalla
   if refs.empty?
-     debug_msg = "CATASTRO WFS BLOQUEADO O VACÍO:\n"
+     debug_msg = "EL GOBIERNO NO DEVUELVE EDIFICIOS:\n"
      debug_msg += "- BBOX Enviado: #{bbox_c}\n"
-     debug_msg += "- Código de Respuesta: #{res_wfs.code}\n"
-     debug_msg += "- Respuesta del Gobierno (primeros 500 caracteres):\n#{xml_wfs[0..500]}"
+     debug_msg += "- Respuesta del Gobierno (primeros 300 char):\n#{xml_wfs[0..300]}"
      return [[], debug_msg]
   end
 
-  # 3. EXTRAER LOS LOCALES (Con freno de mano puesto para no ser baneados)
+  # 3. EXTRAER LOS LOCALES CON FRENO DE MANO PARA EVITAR BANEO
   refs.each do |rc14|
     sleep(0.1) 
     
@@ -188,7 +187,7 @@ __END__
   
   <form action="/buscar" method="POST" onsubmit="mostrarCarga()">
     <label>📍 Calle o Zona (Madrid):</label>
-    <input type="text" name="calle" placeholder="Ej: General Ricardos, Carabanchel" required>
+    <input type="text" name="calle" placeholder="Ej: General Ricardos" required>
     
     <div class="caja-vut">
       <h3 style="margin-top:0; color: #007BFF;">⚡ Modo Cazador de VUTs</h3>
@@ -238,7 +237,7 @@ __END__
     <div id="cargando" style="display:none; text-align:center; margin-top:20px;">
       <div class="spinner"></div>
       <h3 style="color:#007BFF; display:inline-block;">Estoy pensando, no me estoy rascando las narices. Espera, plis<span class="loading-text"></span></h3>
-      <p style="color:#666;"><small>(Buscando en un radio de 200m. Esto puede tardar varios minutos...)</small></p>
+      <p style="color:#666;"><small>(Conectando con Satélite ArcGIS y Catastro. Puede tardar un minuto...)</small></p>
     </div>
   </form>
 </body>
@@ -305,7 +304,7 @@ __END__
 
   <% if @debug_log && @debug_log != "" %>
     <div style="background-color: #ffd2d2; border-left: 5px solid #dc3545; padding: 15px; margin-bottom: 20px; font-family: monospace; white-space: pre-wrap; color: #721c24;">
-      <strong>⚠️ CHIVATO DEL SISTEMA (Pásame este texto):</strong>
+      <strong>⚠️ CHIVATO DEL SISTEMA:</strong>
       <br><br><%= @debug_log %>
     </div>
   <% end %>
@@ -324,6 +323,17 @@ __END__
       <% end %>
     </ul>
   </div>
+
+  <% if @filtros[:modo_vut] == "on" && @resultados.any? %>
+    <div class="aviso-legal">
+      <strong>⚠️ Avisos Legales Plan RESIDE a comprobar manualmente:</strong>
+      <ul style="margin: 5px 0 0 0; padding-left: 20px;">
+        <li>Asegúrate de que esta calle no se encuentra en el <strong>Anillo 1 (Centro Histórico)</strong>.</li>
+        <li>Comprueba en el plano municipal que no sea un <strong>Eje Terciario protegido</strong> (Norma Zonal 10).</li>
+        <li>Recuerda que el local necesitará una altura libre interior de <strong>2,50 metros</strong>.</li>
+      </ul>
+    </div>
+  <% end %>
 
   <% if @resultados.any? %>
     <table border="1" style="width:100%; text-align:left;">
