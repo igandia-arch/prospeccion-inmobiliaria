@@ -3,6 +3,8 @@ require 'net/http'
 require 'uri'
 require 'json'
 require 'csv'
+require 'openssl'
+require 'cgi' # Para que el chivato se pueda leer perfectamente en pantalla
 
 # --- CONFIGURACIÓN PARA LA NUBE ---
 set :bind, '0.0.0.0'
@@ -53,14 +55,12 @@ def ejecutar_busqueda_web(calle, f)
   c_lat = datos_mapa["candidates"].first["location"]["y"].to_f
   c_lon = datos_mapa["candidates"].first["location"]["x"].to_f
   
-  # Calculamos el radar
+  # ¡VOLVEMOS A MADRID! (Latitud y Longitud en su orden correcto)
   lat_min = (c_lat - 0.001).round(6)
   lon_min = (c_lon - 0.001).round(6)
   lat_max = (c_lat + 0.001).round(6)
   lon_max = (c_lon + 0.001).round(6)
-  
-  # ¡LA CORRECCIÓN MÁGICA! Orden correcto: Longitud(X), Latitud(Y)
-  bbox_c = "#{lon_min},#{lat_min},#{lon_max},#{lat_max}"
+  bbox_c = "#{lat_min},#{lon_min},#{lat_max},#{lon_max}"
 
   # 2. CATASTRO (Servidor principal)
   url_wfs = URI("http://ovc.catastro.meh.es/INSPIRE/wfsBU.aspx?service=WFS&version=2.0.0&request=GetFeature&typenames=bu:BuildingPart&srsname=EPSG:4326&BBOX=#{bbox_c}")
@@ -68,18 +68,21 @@ def ejecutar_busqueda_web(calle, f)
   begin
     req_wfs = Net::HTTP::Get.new(url_wfs)
     req_wfs['User-Agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
+    req_wfs['Accept-Encoding'] = 'identity' # OBLIGAMOS a que no comprima los datos (Adiós a los ???)
+    
     res_wfs = Net::HTTP.start(url_wfs.hostname, url_wfs.port, use_ssl: false) { |h| h.request(req_wfs) }
     xml_wfs = res_wfs.body.encode("UTF-8", invalid: :replace, undef: :replace, replace: "?")
   rescue => e
     return [[], "ERROR DE CONEXIÓN CATASTRO: #{e.message}"]
   end
 
-  refs = xml_wfs.scan(/localId[^>]*>([A-Z0-9]{14})/).flatten.uniq
+  # Expresión regular mejorada: caza la referencia de 14 dígitos por muy oculta que esté
+  refs = xml_wfs.scan(/localId>\s*(?:ES\.SDGC\.BU\.)?([A-Z0-9]{14})/i).flatten.uniq
 
   if refs.empty?
-     debug_msg = "EL GOBIERNO NO HA ENCONTRADO EDIFICIOS:\n"
+     debug_msg = "EL GOBIERNO NO HA ENCONTRADO EDIFICIOS AQUÍ:\n"
      debug_msg += "- BBOX Enviado: #{bbox_c}\n"
-     debug_msg += "- Respuesta:\n#{xml_wfs[0..300]}"
+     debug_msg += "- Respuesta XML:\n#{CGI.escapeHTML(xml_wfs[0..800])}"
      return [[], debug_msg]
   end
 
@@ -92,6 +95,8 @@ def ejecutar_busqueda_web(calle, f)
     begin
         req_det = Net::HTTP::Get.new(url_det)
         req_det['User-Agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
+        req_det['Accept-Encoding'] = 'identity' # Sin compresión aquí tampoco
+        
         res_det = Net::HTTP.start(url_det.hostname, url_det.port, use_ssl: false) { |h| h.request(req_det) }
         next unless res_det.is_a?(Net::HTTPSuccess)
         xml = res_det.body.encode("UTF-8", invalid: :replace, undef: :replace, replace: "?")
@@ -110,9 +115,11 @@ def ejecutar_busqueda_web(calle, f)
       
       dir = p_xml.match(/<ldt>([^<]+)<\/ldt>/i) ? $1.strip : "Sin dirección"
 
+      # Mínimo de 50 m2 si estás en Modo VUT (Para llegar a los 40 útiles legales)
       min_requerido = (f[:modo_vut] == "on" && f[:min_m2] < 50) ? 50 : f[:min_m2]
       next if sfc < min_requerido || sfc > f[:max_m2]
 
+      # Filtros Modo VUT: Solo bajos, sin uso residencial, acceso independiente
       if f[:modo_vut] == "on"
         next unless ["00", "BA", "BJ", "PB"].include?(pt.upcase) 
         next if ["V", "E"].include?(uso.upcase) 
@@ -315,7 +322,7 @@ __END__
       <% if @filtros[:modo_vut] == "on" %>
         <li style="color:#007BFF; font-weight:bold;">⚡ MODO CAZADOR VUT ACTIVADO:</li>
         <li><strong>Superficie Exigida:</strong> Entre <%= [@filtros[:min_m2], 50].max %> m² y <%= @filtros[:max_m2] == 999999 ? 'Sin límite' : @filtros[:max_m2].to_s + ' m²' %>.</li>
-        <li>Solo plantas bajas (garantiza viabilidad de acceso independiente)[cite: 253, 330].</li>
+        <li>Solo plantas bajas (garantiza viabilidad de acceso independiente).</li>
         <li>Solo locales no residenciales (comercial, industrial, oficinas).</li>
       <% else %>
         <li><strong>Superficie:</strong> Entre <%= @filtros[:min_m2] %> m² y <%= @filtros[:max_m2] == 999999 ? 'Sin límite' : @filtros[:max_m2].to_s + ' m²' %></li>
@@ -328,9 +335,9 @@ __END__
     <div class="aviso-legal">
       <strong>⚠️ Avisos Legales Plan RESIDE a comprobar manualmente:</strong>
       <ul style="margin: 5px 0 0 0; padding-left: 20px;">
-        <li>Asegúrate de que esta calle no se encuentra en el <strong>Anillo 1 (Centro Histórico)</strong>[cite: 253, 307].</li>
-        <li>Comprueba en el plano municipal que no sea un <strong>Eje Terciario protegido</strong> (Norma Zonal 10)[cite: 253, 337].</li>
-        <li>Recuerda que el local necesitará una altura libre interior de <strong>2,50 metros</strong>[cite: 253, 360].</li>
+        <li>Asegúrate de que esta calle no se encuentra en el <strong>Anillo 1 (Centro Histórico)</strong>.</li>
+        <li>Comprueba en el plano municipal que no sea un <strong>Eje Terciario protegido</strong> (Norma Zonal 10).</li>
+        <li>Recuerda que el local necesitará una altura libre interior de <strong>2,50 metros</strong>.</li>
       </ul>
     </div>
   <% end %>
