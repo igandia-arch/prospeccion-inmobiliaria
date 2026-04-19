@@ -28,7 +28,7 @@ post '/buscar' do
     modo_vut: params[:modo_vut]    # "on" o nil
   }
 
-  @resultados = ejecutar_busqueda_web(@nombre_calle, @filtros)
+  @resultados, @debug_log = ejecutar_busqueda_web(@nombre_calle, @filtros)
   erb :resultados
 end
 
@@ -36,53 +36,69 @@ end
 def ejecutar_busqueda_web(calle, f)
   candidatos = []
   
-  # Buscamos en Madrid (se recomienda añadir el barrio en el buscador de la web)
-  url_mapa = URI("https://nominatim.openstreetmap.org/search?q=#{URI.encode_www_form_component(calle + ', Madrid, España')}&format=json")
-  res_mapa = Net::HTTP.start(url_mapa.hostname, url_mapa.port, use_ssl: true, verify_mode: OpenSSL::SSL::VERIFY_NONE) do |h| 
-    h.request(Net::HTTP::Get.new(url_mapa, {'User-Agent' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}))
-  end
-  
-  # ESCUDO PROTECTOR
+  # 1. BUSCAMOS LAS COORDENADAS EN EL MAPA
   begin
+    url_mapa = URI("https://nominatim.openstreetmap.org/search?q=#{URI.encode_www_form_component(calle + ', Madrid, España')}&format=json")
+    res_mapa = Net::HTTP.start(url_mapa.hostname, url_mapa.port, use_ssl: true, verify_mode: OpenSSL::SSL::VERIFY_NONE) do |h| 
+      h.request(Net::HTTP::Get.new(url_mapa, {'User-Agent' => 'IvanAppProspeccion/1.0'}))
+    end
     datos_mapa = JSON.parse(res_mapa.body)
-  rescue JSON::ParserError
-    return [] 
+  rescue => e
+    return [[], "ERROR DEL MAPA: #{e.message}"]
   end
   
-  return [] if datos_mapa.nil? || datos_mapa.empty?
+  if datos_mapa.nil? || datos_mapa.empty?
+    return [[], "ERROR DEL MAPA: No ha encontrado esa calle. Intenta añadir el barrio o un número."]
+  end
 
   bbox = datos_mapa.first["boundingbox"]
   c_lat = (bbox[0].to_f + bbox[1].to_f) / 2.0
   c_lon = (bbox[2].to_f + bbox[3].to_f) / 2.0
   
-  # RADAR DE 200 METROS (Para no saturar al Catastro ni a Render)
   lat_min = (c_lat - 0.001).round(6)
   lon_min = (c_lon - 0.001).round(6)
   lat_max = (c_lat + 0.001).round(6)
   lon_max = (c_lon + 0.001).round(6)
   bbox_c = "#{lat_min},#{lon_min},#{lat_max},#{lon_max}"
 
-  url_wfs = URI("https://ovc.catastro.meh.es/INSPIRE/wfsBU.aspx?service=WFS&version=2.0.0&request=GetFeature&typenames=bu:BuildingPart&srsname=EPSG:4326&BBOX=#{bbox_c}")
+  # 2. ENTRANDO POR LA PUERTA TRASERA DEL CATASTRO (www1)
+  url_wfs = URI("https://www1.sedecatastro.gob.es/INSPIRE/wfsBU.aspx?service=WFS&version=2.0.0&request=GetFeature&typenames=bu:BuildingPart&srsname=EPSG:4326&BBOX=#{bbox_c}")
   
-  req_wfs = Net::HTTP::Get.new(url_wfs)
-  req_wfs['User-Agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
-  res_wfs = Net::HTTP.start(url_wfs.hostname, url_wfs.port, use_ssl: true, verify_mode: OpenSSL::SSL::VERIFY_NONE) { |h| h.request(req_wfs) }
-  
-  xml_wfs = res_wfs.body.encode("UTF-8", invalid: :replace, undef: :replace, replace: "?")
+  begin
+    req_wfs = Net::HTTP::Get.new(url_wfs)
+    req_wfs['User-Agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
+    res_wfs = Net::HTTP.start(url_wfs.hostname, url_wfs.port, use_ssl: true, verify_mode: OpenSSL::SSL::VERIFY_NONE) { |h| h.request(req_wfs) }
+    xml_wfs = res_wfs.body.encode("UTF-8", invalid: :replace, undef: :replace, replace: "?")
+  rescue => e
+    return [[], "ERROR DE CONEXIÓN CATASTRO: #{e.message}"]
+  end
+
   refs = xml_wfs.scan(/localId[^>]*>([A-Z0-9]{14})/).flatten.uniq
 
+  # CHIVATO: Si el Catastro nos devuelve 0 edificios, mostramos por qué en pantalla
+  if refs.empty?
+     debug_msg = "CATASTRO WFS BLOQUEADO O VACÍO:\n"
+     debug_msg += "- BBOX Enviado: #{bbox_c}\n"
+     debug_msg += "- Código de Respuesta: #{res_wfs.code}\n"
+     debug_msg += "- Respuesta del Gobierno (primeros 500 caracteres):\n#{xml_wfs[0..500]}"
+     return [[], debug_msg]
+  end
+
+  # 3. EXTRAER LOS LOCALES (Con freno de mano puesto para no ser baneados)
   refs.each do |rc14|
-    # ¡VUELVE EL FRENO DE MANO! Es imprescindible para que el Catastro no nos mande hojas en blanco
     sleep(0.1) 
     
-    url_det = URI("https://ovc.catastro.meh.es/ovcservweb/OVCSWLocalizacionRC/OVCCallejero.asmx/Consulta_DNPRC?Provincia=MADRID&Municipio=MADRID&RC=#{rc14}")
-    req_det = Net::HTTP::Get.new(url_det)
-    req_det['User-Agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
-    res_det = Net::HTTP.start(url_det.hostname, url_det.port, use_ssl: true, verify_mode: OpenSSL::SSL::VERIFY_NONE) { |h| h.request(req_det) }
+    url_det = URI("https://www1.sedecatastro.gob.es/ovcservweb/OVCSWLocalizacionRC/OVCCallejero.asmx/Consulta_DNPRC?Provincia=MADRID&Municipio=MADRID&RC=#{rc14}")
     
-    next unless res_det.is_a?(Net::HTTPSuccess)
-    
-    xml = res_det.body.encode("UTF-8", invalid: :replace, undef: :replace, replace: "?")
+    begin
+        req_det = Net::HTTP::Get.new(url_det)
+        req_det['User-Agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
+        res_det = Net::HTTP.start(url_det.hostname, url_det.port, use_ssl: true, verify_mode: OpenSSL::SSL::VERIFY_NONE) { |h| h.request(req_det) }
+        next unless res_det.is_a?(Net::HTTPSuccess)
+        xml = res_det.body.encode("UTF-8", invalid: :replace, undef: :replace, replace: "?")
+    rescue
+        next
+    end
     
     xml.scan(/<bico>(.*?)<\/bico>/im).each do |prop|
       p_xml = prop[0]
@@ -115,7 +131,8 @@ def ejecutar_busqueda_web(calle, f)
       candidatos << { dir: dir, sfc: sfc, uso: uso, ant: ant, pt: pt, pu: pu, rc: rc14 }
     end
   end
-  candidatos
+  
+  return [candidatos, ""]
 end
 
 __END__
@@ -172,7 +189,6 @@ __END__
   <form action="/buscar" method="POST" onsubmit="mostrarCarga()">
     <label>📍 Calle o Zona (Madrid):</label>
     <input type="text" name="calle" placeholder="Ej: General Ricardos, Carabanchel" required>
-    <p style="font-size: 0.8em; margin-top: -10px; color: #666;"><em>* Añade el barrio para mayor precisión.</em></p>
     
     <div class="caja-vut">
       <h3 style="margin-top:0; color: #007BFF;">⚡ Modo Cazador de VUTs</h3>
@@ -280,39 +296,34 @@ __END__
 <body>
   <div style="display:flex; justify-content:space-between; align-items:center;">
     <a href="/">⬅️ Nueva Búsqueda</a>
-    <button onclick="descargarExcel()" style="background-color:#28a745; color:white; border-radius:5px;">📥 Descargar Excel</button>
+    <% if @resultados.any? %>
+      <button onclick="descargarExcel()" style="background-color:#28a745; color:white; border-radius:5px;">📥 Descargar Excel</button>
+    <% end %>
   </div>
   
   <h1>📍 Resultados para: <%= @nombre_calle %></h1>
+
+  <% if @debug_log && @debug_log != "" %>
+    <div style="background-color: #ffd2d2; border-left: 5px solid #dc3545; padding: 15px; margin-bottom: 20px; font-family: monospace; white-space: pre-wrap; color: #721c24;">
+      <strong>⚠️ CHIVATO DEL SISTEMA (Pásame este texto):</strong>
+      <br><br><%= @debug_log %>
+    </div>
+  <% end %>
   
   <div class="resumen-filtros">
-    <strong>Se han encontrado <%= @resultados.count %> inmuebles en un radio de 200m con estos criterios:</strong>
+    <strong>Se han encontrado <%= @resultados.count %> inmuebles con estos criterios:</strong>
     <ul>
       <% if @filtros[:modo_vut] == "on" %>
         <li style="color:#007BFF; font-weight:bold;">⚡ MODO CAZADOR VUT ACTIVADO:</li>
         <li><strong>Superficie Exigida:</strong> Entre <%= [@filtros[:min_m2], 50].max %> m² y <%= @filtros[:max_m2] == 999999 ? 'Sin límite' : @filtros[:max_m2].to_s + ' m²' %>.</li>
         <li>Solo plantas bajas (garantiza viabilidad de acceso independiente).</li>
         <li>Solo locales no residenciales (comercial, industrial, oficinas).</li>
-        <li><strong>Antigüedad:</strong> Desde <%= @filtros[:min_year] %> hasta <%= @filtros[:max_year] %>.</li>
       <% else %>
         <li><strong>Superficie:</strong> Entre <%= @filtros[:min_m2] %> m² y <%= @filtros[:max_m2] == 999999 ? 'Sin límite' : @filtros[:max_m2].to_s + ' m²' %></li>
         <li><strong>Uso Principal:</strong> <%= @filtros[:uso] == '*' ? 'Cualquiera' : @filtros[:uso] %></li>
-        <li><strong>Clase de Inmueble:</strong> <%= @filtros[:clase] == '*' ? 'Cualquiera' : @filtros[:clase] %></li>
-        <li><strong>Antigüedad:</strong> Desde <%= @filtros[:min_year] %> hasta <%= @filtros[:max_year] %></li>
       <% end %>
     </ul>
   </div>
-
-  <% if @filtros[:modo_vut] == "on" %>
-    <div class="aviso-legal">
-      <strong>⚠️ Avisos Legales Plan RESIDE a comprobar manualmente:</strong>
-      <ul style="margin: 5px 0 0 0; padding-left: 20px;">
-        <li>Asegúrate de que esta calle no se encuentra en el <strong>Anillo 1 (Centro Histórico)</strong>.</li>
-        <li>Comprueba en el plano municipal que no sea un <strong>Eje Terciario protegido</strong> (Norma Zonal 10).</li>
-        <li>Recuerda que el local necesitará una altura libre interior de <strong>2,50 metros</strong>.</li>
-      </ul>
-    </div>
-  <% end %>
 
   <% if @resultados.any? %>
     <table border="1" style="width:100%; text-align:left;">
@@ -341,7 +352,7 @@ __END__
     </table>
   <% else %>
     <p style="text-align:center; padding: 20px; color: #666;">
-      <em>No se ha encontrado ninguna propiedad que cumpla todos los filtros en esta zona. Prueba a buscar en otra calle.</em>
+      <em>No se ha encontrado ninguna propiedad que cumpla todos los filtros en esta zona.</em>
     </p>
   <% end %>
 </body>
