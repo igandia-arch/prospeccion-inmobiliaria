@@ -36,14 +36,13 @@ end
 def ejecutar_busqueda_web(calle, f)
   candidatos = []
   
-  # Volvemos a la búsqueda normal (añade el barrio en la web para más precisión)
+  # Buscamos en Madrid (se recomienda añadir el barrio en el buscador de la web)
   url_mapa = URI("https://nominatim.openstreetmap.org/search?q=#{URI.encode_www_form_component(calle + ', Madrid, España')}&format=json")
   res_mapa = Net::HTTP.start(url_mapa.hostname, url_mapa.port, use_ssl: true, verify_mode: OpenSSL::SSL::VERIFY_NONE) do |h| 
-    # Usamos un identificador de navegador real para que OpenStreetMap no nos bloquee
     h.request(Net::HTTP::Get.new(url_mapa, {'User-Agent' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}))
   end
   
-  # ESCUDO PROTECTOR: Atrapamos cualquier error del mapa
+  # ESCUDO PROTECTOR
   begin
     datos_mapa = JSON.parse(res_mapa.body)
   rescue JSON::ParserError
@@ -56,7 +55,7 @@ def ejecutar_busqueda_web(calle, f)
   c_lat = (bbox[0].to_f + bbox[1].to_f) / 2.0
   c_lon = (bbox[2].to_f + bbox[3].to_f) / 2.0
   
-  # RADAR SEGURO DE 200 METROS (Para que Render no colapse por tiempo)
+  # RADAR DE 200 METROS (Para no saturar al Catastro ni a Render)
   lat_min = (c_lat - 0.001).round(6)
   lon_min = (c_lon - 0.001).round(6)
   lat_max = (c_lat + 0.001).round(6)
@@ -73,7 +72,8 @@ def ejecutar_busqueda_web(calle, f)
   refs = xml_wfs.scan(/localId[^>]*>([A-Z0-9]{14})/).flatten.uniq
 
   refs.each do |rc14|
-    sleep(0.1) # Freno de mano de seguridad
+    # ¡VUELVE EL FRENO DE MANO! Es imprescindible para que el Catastro no nos mande hojas en blanco
+    sleep(0.1) 
     
     url_det = URI("https://ovc.catastro.meh.es/ovcservweb/OVCSWLocalizacionRC/OVCCallejero.asmx/Consulta_DNPRC?Provincia=MADRID&Municipio=MADRID&RC=#{rc14}")
     req_det = Net::HTTP::Get.new(url_det)
@@ -95,11 +95,9 @@ def ejecutar_busqueda_web(calle, f)
       
       dir = p_xml.match(/<ldt>([^<]+)<\/ldt>/i) ? $1.strip : "Sin dirección"
 
-      # 1. FILTRO DE METROS (Aplica siempre)
       min_requerido = (f[:modo_vut] == "on" && f[:min_m2] < 50) ? 50 : f[:min_m2]
       next if sfc < min_requerido || sfc > f[:max_m2]
 
-      # 2. FILTROS DE USO SEGÚN EL MODO
       if f[:modo_vut] == "on"
         next unless ["00", "BA", "BJ", "PB"].include?(pt.upcase) 
         next if ["V", "E"].include?(uso.upcase) 
@@ -109,7 +107,6 @@ def ejecutar_busqueda_web(calle, f)
         next if f[:clase] != "*" && cn != f[:clase]
       end
 
-      # 3. FILTROS DE AÑO Y MINÚSCULAS
       next if ant < f[:min_year] || ant > f[:max_year]
       if f[:minuscula] == "on"
         next unless (pt.match?(/[a-z]/) || pu.match?(/[a-z]/))
@@ -174,8 +171,8 @@ __END__
   
   <form action="/buscar" method="POST" onsubmit="mostrarCarga()">
     <label>📍 Calle o Zona (Madrid):</label>
-    <input type="text" name="calle" placeholder="Ej: Colombia, Chamartín" required>
-    <p style="font-size: 0.8em; margin-top: -10px; color: #666;"><em>* Añade el barrio o código postal si la calle es muy genérica.</em></p>
+    <input type="text" name="calle" placeholder="Ej: General Ricardos, Carabanchel" required>
+    <p style="font-size: 0.8em; margin-top: -10px; color: #666;"><em>* Añade el barrio para mayor precisión.</em></p>
     
     <div class="caja-vut">
       <h3 style="margin-top:0; color: #007BFF;">⚡ Modo Cazador de VUTs</h3>
@@ -344,7 +341,7 @@ __END__
     </table>
   <% else %>
     <p style="text-align:center; padding: 20px; color: #666;">
-      <em>No se ha encontrado ninguna propiedad que cumpla todos los filtros en esta zona. Prueba a buscar en otra calle menos residencial o más ancha.</em>
+      <em>No se ha encontrado ninguna propiedad que cumpla todos los filtros en esta zona. Prueba a buscar en otra calle.</em>
     </p>
   <% end %>
 </body>
