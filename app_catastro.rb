@@ -3,9 +3,6 @@ require 'net/http'
 require 'uri'
 require 'json'
 require 'csv'
-require 'openssl'
-require 'zlib'
-require 'stringio'
 
 # --- CONFIGURACIÓN PARA LA NUBE ---
 set :bind, '0.0.0.0'
@@ -38,10 +35,10 @@ end
 def ejecutar_busqueda_web(calle, f)
   candidatos = []
   
-  # 1. SATÉLITE ARCGIS
+  # 1. SATÉLITE ARCGIS (Muy preciso)
   begin
     url_mapa = URI("https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer/findAddressCandidates?f=json&singleLine=#{URI.encode_www_form_component(calle + ', Madrid, España')}")
-    res_mapa = Net::HTTP.start(url_mapa.hostname, url_mapa.port, use_ssl: true, verify_mode: OpenSSL::SSL::VERIFY_NONE) do |h| 
+    res_mapa = Net::HTTP.start(url_mapa.hostname, url_mapa.port, use_ssl: true) do |h| 
       h.request(Net::HTTP::Get.new(url_mapa))
     end
     datos_mapa = JSON.parse(res_mapa.body)
@@ -50,35 +47,29 @@ def ejecutar_busqueda_web(calle, f)
   end
   
   if datos_mapa["candidates"].nil? || datos_mapa["candidates"].empty?
-    return [[], "ERROR DEL MAPA: El satélite no ha encontrado esa calle. Intenta añadir un número (Ej: 'General Ricardos 50, Madrid')."]
+    return [[], "ERROR DEL MAPA: El satélite no ha encontrado esa calle. Intenta añadir un número."]
   end
 
   c_lat = datos_mapa["candidates"].first["location"]["y"].to_f
   c_lon = datos_mapa["candidates"].first["location"]["x"].to_f
   
+  # Calculamos el radar
   lat_min = (c_lat - 0.001).round(6)
   lon_min = (c_lon - 0.001).round(6)
   lat_max = (c_lat + 0.001).round(6)
   lon_max = (c_lon + 0.001).round(6)
-  bbox_c = "#{lat_min},#{lon_min},#{lat_max},#{lon_max}"
+  
+  # ¡LA CORRECCIÓN MÁGICA! Orden correcto: Longitud(X), Latitud(Y)
+  bbox_c = "#{lon_min},#{lat_min},#{lon_max},#{lat_max}"
 
-  # 2. CATASTRO (CON DESCOMPRESOR GZIP)
-  url_wfs = URI("https://www1.sedecatastro.gob.es/INSPIRE/wfsBU.aspx?service=WFS&version=2.0.0&request=GetFeature&typenames=bu:BuildingPart&srsname=EPSG:4326&BBOX=#{bbox_c}")
+  # 2. CATASTRO (Servidor principal)
+  url_wfs = URI("http://ovc.catastro.meh.es/INSPIRE/wfsBU.aspx?service=WFS&version=2.0.0&request=GetFeature&typenames=bu:BuildingPart&srsname=EPSG:4326&BBOX=#{bbox_c}")
   
   begin
     req_wfs = Net::HTTP::Get.new(url_wfs)
     req_wfs['User-Agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
-    # Avisamos al gobierno de que sabemos leer archivos comprimidos
-    req_wfs['Accept-Encoding'] = 'gzip, deflate' 
-    
-    res_wfs = Net::HTTP.start(url_wfs.hostname, url_wfs.port, use_ssl: true, verify_mode: OpenSSL::SSL::VERIFY_NONE) { |h| h.request(req_wfs) }
-    
-    # ¡LA MAGIA!: Descomprimimos el archivo ZIP del Gobierno si viene comprimido
-    body_wfs = res_wfs.body
-    if res_wfs['content-encoding'] == 'gzip'
-      body_wfs = Zlib::GzipReader.new(StringIO.new(body_wfs)).read
-    end
-    xml_wfs = body_wfs.encode("UTF-8", invalid: :replace, undef: :replace, replace: "?")
+    res_wfs = Net::HTTP.start(url_wfs.hostname, url_wfs.port, use_ssl: false) { |h| h.request(req_wfs) }
+    xml_wfs = res_wfs.body.encode("UTF-8", invalid: :replace, undef: :replace, replace: "?")
   rescue => e
     return [[], "ERROR DE CONEXIÓN CATASTRO: #{e.message}"]
   end
@@ -86,30 +77,24 @@ def ejecutar_busqueda_web(calle, f)
   refs = xml_wfs.scan(/localId[^>]*>([A-Z0-9]{14})/).flatten.uniq
 
   if refs.empty?
-     debug_msg = "EL GOBIERNO HA DEVUELTO UN ERROR O UNA ZONA VACÍA:\n"
+     debug_msg = "EL GOBIERNO NO HA ENCONTRADO EDIFICIOS:\n"
      debug_msg += "- BBOX Enviado: #{bbox_c}\n"
-     debug_msg += "- Respuesta del Gobierno (primeros 500 letras):\n#{xml_wfs[0..500]}"
+     debug_msg += "- Respuesta:\n#{xml_wfs[0..300]}"
      return [[], debug_msg]
   end
 
-  # 3. EXTRAER LOS LOCALES INDIVIDUALES
+  # 3. EXTRAER LOS LOCALES (Con freno de mano para evitar baneos)
   refs.each do |rc14|
     sleep(0.1) 
     
-    url_det = URI("https://www1.sedecatastro.gob.es/ovcservweb/OVCSWLocalizacionRC/OVCCallejero.asmx/Consulta_DNPRC?Provincia=MADRID&Municipio=MADRID&RC=#{rc14}")
+    url_det = URI("http://ovc.catastro.meh.es/ovcservweb/OVCSWLocalizacionRC/OVCCallejero.asmx/Consulta_DNPRC?Provincia=MADRID&Municipio=MADRID&RC=#{rc14}")
     
     begin
         req_det = Net::HTTP::Get.new(url_det)
         req_det['User-Agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
-        req_det['Accept-Encoding'] = 'gzip, deflate'
-        res_det = Net::HTTP.start(url_det.hostname, url_det.port, use_ssl: true, verify_mode: OpenSSL::SSL::VERIFY_NONE) { |h| h.request(req_det) }
+        res_det = Net::HTTP.start(url_det.hostname, url_det.port, use_ssl: false) { |h| h.request(req_det) }
         next unless res_det.is_a?(Net::HTTPSuccess)
-        
-        body_det = res_det.body
-        if res_det['content-encoding'] == 'gzip'
-          body_det = Zlib::GzipReader.new(StringIO.new(body_det)).read
-        end
-        xml = body_det.encode("UTF-8", invalid: :replace, undef: :replace, replace: "?")
+        xml = res_det.body.encode("UTF-8", invalid: :replace, undef: :replace, replace: "?")
     rescue
         next
     end
@@ -252,7 +237,7 @@ __END__
     <div id="cargando" style="display:none; text-align:center; margin-top:20px;">
       <div class="spinner"></div>
       <h3 style="color:#007BFF; display:inline-block;">Estoy pensando, no me estoy rascando las narices. Espera, plis<span class="loading-text"></span></h3>
-      <p style="color:#666;"><small>(Descomprimiendo datos del Catastro. Puede tardar un minuto...)</small></p>
+      <p style="color:#666;"><small>(Escaneando Madrid. Esto puede tardar varios minutos...)</small></p>
     </div>
   </form>
 </body>
@@ -330,7 +315,7 @@ __END__
       <% if @filtros[:modo_vut] == "on" %>
         <li style="color:#007BFF; font-weight:bold;">⚡ MODO CAZADOR VUT ACTIVADO:</li>
         <li><strong>Superficie Exigida:</strong> Entre <%= [@filtros[:min_m2], 50].max %> m² y <%= @filtros[:max_m2] == 999999 ? 'Sin límite' : @filtros[:max_m2].to_s + ' m²' %>.</li>
-        <li>Solo plantas bajas (garantiza viabilidad de acceso independiente).</li>
+        <li>Solo plantas bajas (garantiza viabilidad de acceso independiente)[cite: 253, 330].</li>
         <li>Solo locales no residenciales (comercial, industrial, oficinas).</li>
       <% else %>
         <li><strong>Superficie:</strong> Entre <%= @filtros[:min_m2] %> m² y <%= @filtros[:max_m2] == 999999 ? 'Sin límite' : @filtros[:max_m2].to_s + ' m²' %></li>
@@ -343,9 +328,9 @@ __END__
     <div class="aviso-legal">
       <strong>⚠️ Avisos Legales Plan RESIDE a comprobar manualmente:</strong>
       <ul style="margin: 5px 0 0 0; padding-left: 20px;">
-        <li>Asegúrate de que esta calle no se encuentra en el <strong>Anillo 1 (Centro Histórico)</strong>.</li>
-        <li>Comprueba en el plano municipal que no sea un <strong>Eje Terciario protegido</strong> (Norma Zonal 10).</li>
-        <li>Recuerda que el local necesitará una altura libre interior de <strong>2,50 metros</strong>.</li>
+        <li>Asegúrate de que esta calle no se encuentra en el <strong>Anillo 1 (Centro Histórico)</strong>[cite: 253, 307].</li>
+        <li>Comprueba en el plano municipal que no sea un <strong>Eje Terciario protegido</strong> (Norma Zonal 10)[cite: 253, 337].</li>
+        <li>Recuerda que el local necesitará una altura libre interior de <strong>2,50 metros</strong>[cite: 253, 360].</li>
       </ul>
     </div>
   <% end %>
